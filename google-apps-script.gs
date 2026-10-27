@@ -22,10 +22,10 @@
 
 var HEADERS = {
   Quizzes:     ['ID','Kind','Title','Product','Set','Source','QuestionsJSON','CreatedAt','UpdatedAt'],
-  Activations: ['Slug','QuizID','QuizTitle','Purpose','Date','Message','CreatedAt'],
+  Activations: ['Slug','QuizID','QuizTitle','Purpose','Date','Message','CreatedAt','DurationMinutes','Status','ClosedAt','ClosedBy'],
   Supervisors: ['Name'],
   Zones:       ['Name'],
-  Responses:   ['ID','Date','Purpose','Quiz/Survey','Kind','Name','Mobile','Employee ID','Supervisor','Zone','Score','Total','Percent','AnswersJSON','Submitted At']
+  Responses:   ['ID','Date','Purpose','Quiz/Survey','Kind','Name','Mobile','Employee ID','Supervisor','Zone','Score','Total','Percent','AnswersJSON','Submitted At','CompletionStatus']
 };
 
 function ss_() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -33,6 +33,7 @@ function ss_() { return SpreadsheetApp.getActiveSpreadsheet(); }
 function sheet_(name) {
   var s = ss_().getSheetByName(name) || ss_().insertSheet(name);
   if (s.getLastRow() === 0) s.appendRow(HEADERS[name]);
+  else s.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]);
   return s;
 }
 function ensureAllSheets_() { Object.keys(HEADERS).forEach(sheet_); }
@@ -87,7 +88,7 @@ function parseQuiz_(r) {
   var qs = []; try { qs = JSON.parse(r[6] || '[]'); } catch (e) {}
   return { id: r[0], kind: r[1], title: r[2], product: r[3], set: r[4], source: r[5], questions: qs, createdAt: r[7] };
 }
-function parseAct_(r) { return { slug: r[0], quizId: r[1], quizTitle: r[2], purpose: r[3], date: String(r[4]), message: r[5], createdAt: r[6] }; }
+function parseAct_(r) { return { slug: r[0], quizId: r[1], quizTitle: r[2], purpose: r[3], date: String(r[4]), message: r[5], createdAt: r[6], durationMinutes: Number(r[7] || 0), status: String(r[8] || 'active'), closedAt: r[9] || '', closedBy: r[10] || '' }; }
 
 /* ---------------- GET API ---------------- */
 function doGet(e) {
@@ -100,6 +101,7 @@ function doGet(e) {
       var acts = rows_('Activations').map(parseAct_), act = null;
       for (var i = 0; i < acts.length; i++) if (acts[i].slug === p.slug) act = acts[i];
       if (!act) return json_({ ok: false, error: 'Activation not found', slug: p.slug });
+      if (act.status === 'closed') return json_({ ok: true, closed: true, activation: act, supervisors: list_('Supervisors'), zones: list_('Zones') });
       var quiz = null, qs = rows_('Quizzes').map(parseQuiz_);
       for (var j = 0; j < qs.length; j++) if (qs[j].id === act.quizId) quiz = qs[j];
       if (!quiz) return json_({ ok: false, error: 'Quiz not found for activation' });
@@ -140,7 +142,7 @@ function doPost(e) {
     if (action === 'activate' && d.activation) {
       var a = d.activation;
       if (d.quiz) { var q2 = d.quiz; upsert_('Quizzes', 0, q2.id, [q2.id, q2.kind || 'quiz', q2.title || '', q2.product || '', q2.set || '', q2.source || '', JSON.stringify(q2.questions || []), q2.createdAt || now, now]); }
-      upsert_('Activations', 0, a.slug, [a.slug, a.quizId, a.quizTitle || '', a.purpose || '', a.date || '', a.message || '', a.createdAt || now]);
+      upsert_('Activations', 0, a.slug, [a.slug, a.quizId, a.quizTitle || '', a.purpose || '', a.date || '', a.message || '', a.createdAt || now, Number(a.durationMinutes || 0), a.status || 'active', a.closedAt || '', a.closedBy || '']);
       return json_({ ok: true, slug: a.slug });
     }
     if (action === 'saveLists') {
@@ -148,10 +150,23 @@ function doPost(e) {
       if (d.zones) setList_('Zones', d.zones);
       return json_({ ok: true, supervisors: list_('Supervisors'), zones: list_('Zones') });
     }
+    if (action === 'closeActivation' || action === 'reopenActivation') {
+      var acts2 = rows_('Activations');
+      for (var k = 0; k < acts2.length; k++) {
+        if (String(acts2[k][0]) === String(d.slug)) {
+          var sh2 = sheet_('Activations'), isClose = action === 'closeActivation';
+          sh2.getRange(k + 2, 9).setValue(isClose ? 'closed' : 'active');
+          sh2.getRange(k + 2, 10).setValue(isClose ? now : '');
+          sh2.getRange(k + 2, 11).setValue(isClose ? (d.by || 'Trainer') : '');
+          return json_({ ok: true, slug: d.slug, status: isClose ? 'closed' : 'active' });
+        }
+      }
+      return json_({ ok: false, error: 'Activation not found' });
+    }
     // default: submit (পুরনো payload-ও support করি)
     sheet_('Responses').appendRow([d.id || ('res-' + Date.now()), d.date || '', d.purpose || '', d.quizTitle || '', d.kind || 'quiz',
       d.name || '', d.mobile || '', d.code || '', d.supervisor || '', d.zone || '',
-      d.score || 0, d.total || 0, d.percent || 0, JSON.stringify(d.answers || {}), d.submittedAt || now]);
+      d.score || 0, d.total || 0, d.percent || 0, JSON.stringify(d.answers || {}), d.submittedAt || now, d.completionStatus || 'submitted']);
     return json_({ ok: true, submitted: d.id || true });
   } catch (err) { return json_({ ok: false, error: String(err) }); }
   finally { try { lock.releaseLock(); } catch (e2) {} }
