@@ -174,3 +174,42 @@ tbody tr:hover td,tr:hover td{background:#FFF9EF}
   .score-ring{width:158px;height:158px}.score-inner{width:124px;height:124px}.score-inner strong{font-size:36px}
 }
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* ---------- v4: Icon system, timer, manual close, motion ---------- */
+.ic{width:19px;height:19px;flex:none;vertical-align:-4px}
+.ic-lg{width:23px;height:23px}.ic-xl{width:44px;height:44px}
+.btn .ic,.badge .ic,.chip .ic{width:17px;height:17px}
+.btn.danger{background:linear-gradient(135deg,#D84A3A,#A92E22);box-shadow:0 10px 22px rgba(169,46,34,.32)}
+.sec-title{display:flex;align-items:center;gap:9px;margin:24px 0 13px}
+.sec-title .ic{color:var(--orange-d)}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.live-dot{width:8px;height:8px;border-radius:50%;background:#2E9E44;display:inline-block;animation:livePulse 1.4s infinite}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(46,158,68,.45)}70%{box-shadow:0 0 0 7px rgba(46,158,68,0)}100%{box-shadow:0 0 0 0 rgba(46,158,68,0)}}
+.badge.red{background:#FDECEA;color:#A92E22;border-color:#F3C2BC}
+.is-closed-card{opacity:.78;border-style:dashed}
+.closed-note{display:flex;gap:9px;align-items:flex-start;background:#FDECEA;border:1px solid #F3C2BC;color:#7C241B;border-radius:13px;padding:12px 14px;margin:12px 0;line-height:1.55}
+.closed-note .ic{margin-top:2px}
+.closed-hero{width:78px;height:78px;margin:4px auto 12px;border-radius:22px;display:grid;place-items:center;background:#FDECEA;color:#A92E22}
+.meta-chips{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;background:var(--olive-t);color:var(--olive-d);font-weight:700;font-size:13px;border:1px solid #DDD49A}
+.chip-time{background:var(--orange-t);color:var(--orange-d);border-color:#FBD9BE}
+.time-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:560px){.time-grid{grid-template-columns:1fr}}
+/* Timer dock (sticky stopwatch) */
+.timer-dock{position:sticky;top:96px;z-index:20;display:flex;align-items:center;gap:12px;background:rgba(20,20,18,.94);color:#fff;border:1px solid rgba(255,255,255,.14);border-radius:17px;padding:10px 14px;margin-bottom:12px;box-shadow:0 14px 30px rgba(20,20,18,.28);backdrop-filter:blur(8px)}
+.timer-ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,#FF8438,var(--orange-d));flex:none}
+.timer-main{flex:1;min-width:0}.timer-main b{font-family:Inter,sans-serif;font-size:22px;letter-spacing:.06em;line-height:1}
+.timer-main span{display:block;font-size:11px;color:#FFD2B3;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin:3px 0 6px}
+.timer-track{height:6px;background:rgba(255,255,255,.16);border-radius:99px;overflow:hidden}
+.timer-track i{display:block;height:100%;width:100%;background:linear-gradient(90deg,var(--olive),var(--orange));transition:width .5s linear}
+.timer-dock.warn{background:#5A3410}.timer-dock.warn .timer-main b{color:#FFC37A}
+.timer-dock.danger{background:#6E1710;animation:timerPulse .8s infinite}
+@keyframes timerPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.018)}}
+.timer-dock.danger .timer-main b{color:#FFB3A7}
+/* Motion: questions & options flow in */
+.question-card{animation:questionIn .45s cubic-bezier(.22,1,.36,1) both}
+@keyframes questionIn{from{opacity:0;transform:translateX(26px)}to{opacity:1;transform:none}}
+.option{animation:optionIn .4s cubic-bezier(.22,1,.36,1) both;animation-delay:calc(var(--i,0)*70ms)}
+@keyframes optionIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.result-card,.form-card{animation:questionIn .45s ease both}
+.btn,.card,.option{will-change:transform}
