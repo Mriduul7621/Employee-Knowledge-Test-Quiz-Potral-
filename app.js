@@ -14,12 +14,23 @@ try{let api=new URLSearchParams(location.search).get('api'); if(api){db.settings
 function remoteUrl(){return (db.settings.sheetUrl||(window.PORTAL_CONFIG&&window.PORTAL_CONFIG.appsScriptUrl)||'').trim()}
 async function remoteGet(action,params={}){let base=remoteUrl(); if(!base) throw new Error('no-url'); let u=new URL(base); u.searchParams.set('action',action); Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v)); let ctl=new AbortController(); let tm=setTimeout(()=>ctl.abort(),15000); try{let r=await fetch(u.toString(),{signal:ctl.signal}); let j=await r.json(); if(!j.ok) throw new Error(j.error||'remote error'); return j}finally{clearTimeout(tm)}}
 async function remotePost(payload){let base=remoteUrl(); if(!base) return {ok:false,error:'no-url'}; try{let r=await fetch(base,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)}); let j=await r.json().catch(()=>({ok:true})); return j}catch(e){return {ok:false,error:String(e)}}}
-function mergeRemote(j){let changed=false; if(j.supervisors&&j.supervisors.length){db.supervisors=j.supervisors;changed=true} if(j.zones&&j.zones.length){db.zones=j.zones;changed=true}
- if(j.quizzes) j.quizzes.forEach(q=>{sanitizeQuizObject(q); let i=db.quizzes.findIndex(x=>x.id==q.id); if(i>=0)db.quizzes[i]=q; else db.quizzes.push(q); changed=true}); sanitizeAllQuizzes(db);
- if(j.activations) j.activations.forEach(a=>{if(!db.activations.find(x=>x.slug==a.slug)){a.id=a.id||uid('act'); db.activations.push(a); changed=true}});
+function sameData_(a,b){try{return JSON.stringify(a)===JSON.stringify(b)}catch(e){return false}}
+function mergeRemote(j){let changed=false;
+ if(j.supervisors&&j.supervisors.length&&!sameData_(db.supervisors,j.supervisors)){db.supervisors=j.supervisors;changed=true}
+ if(j.zones&&j.zones.length&&!sameData_(db.zones,j.zones)){db.zones=j.zones;changed=true}
+ if(j.quizzes) j.quizzes.forEach(q=>{sanitizeQuizObject(q); let i=db.quizzes.findIndex(x=>x.id==q.id); if(i>=0){if(!sameData_(db.quizzes[i],q)){db.quizzes[i]=q;changed=true}} else {db.quizzes.push(q);changed=true}});
+ if(j.quizzes) sanitizeAllQuizzes(db);
+ if(j.activations) j.activations.forEach(a=>{let old=db.activations.find(x=>x.slug==a.slug); if(!old){a.id=a.id||uid('act'); db.activations.push(a); changed=true} else {let merged={...old,...a,id:old.id}; if(!sameData_(old,merged)){Object.assign(old,merged); changed=true}}});
  if(j.results) j.results.forEach(r=>{if(!db.results.find(x=>x.id==r.id)){db.results.push(r); changed=true}});
  if(changed) save(); return changed}
-async function bootstrapRemote(rerender){if(!remoteUrl()) return false; try{let j=await remoteGet('bootstrap'); let c=mergeRemote(j); if(c&&rerender) route(); return true}catch(e){console.warn('bootstrap failed',e); return false}}
+let __bootstrapPromise=null,__bootstrapDone=false;
+async function bootstrapRemote(rerender,force=false){if(!remoteUrl()) return false; if(__bootstrapPromise) return __bootstrapPromise; if(__bootstrapDone&&!force) return true;
+ __bootstrapPromise=(async()=>{try{let j=await remoteGet('bootstrap'); let c=mergeRemote(j); __bootstrapDone=true;
+   let h=location.hash||'#/admin';
+   // Create/Take পেজে rerender করলে ফাইল/ফর্ম রিসেট হয়ে blink করে — সেখানে rerender নয়
+   if(c&&rerender&&!h.startsWith('#/create')&&!h.startsWith('#/take')) renderAdmin(h);
+   return true}catch(e){console.warn('bootstrap failed',e); return false}finally{__bootstrapPromise=null}})();
+ return __bootstrapPromise}
 async function persistQuiz(q){if(!remoteUrl()) return; let r=await remotePost({action:'saveQuiz',quiz:q}); if(!r.ok) console.warn('saveQuiz failed',r)}
 
 function uid(p='id'){return p+'-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
@@ -55,7 +66,7 @@ function sanitizeAllQuizzes(target,recordAudit){
   (target.quizzes||[]).forEach(q=>{let before=(q.questions||[]).length; let r=sanitizeQuizObject(q);
     if(r.removed){totalRemoved+=r.removed; details.push({quizId:q.id,title:q.title||'',product:q.product||'',set:q.set||'',before,after:q.questions.length,removed:r.removed,duplicates:r.duplicates.slice(0,30)})}});
   let report={at:new Date().toISOString(),totalRemoved,affectedSets:details.length,details};
-  if(recordAudit!==false) target.duplicateAudit=report;
+  if(recordAudit!==false && (totalRemoved>0 || !target.duplicateAudit)) target.duplicateAudit=report;
   return report;
 }
 function duplicateAuditHTML(){
@@ -82,8 +93,48 @@ function toast(m){let t=document.createElement('div');t.className='toast';t.text
 function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function today(){let d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 // CSV parser (quoted fields)
-function parseCSV(text){let rows=[],row=[],cur='',q=false;for(let i=0;i<text.length;i++){let c=text[i];if(q){if(c=='"'){if(text[i+1]=='"'){cur+='"';i++}else q=false}else cur+=c}else{if(c=='"')q=true;else if(c==','){row.push(cur);cur=''}else if(c=='\n'){row.push(cur);rows.push(row);row=[];cur=''}else if(c!='\r')cur+=c}}if(cur||row.length){row.push(cur);rows.push(row)}let h=rows.shift().map(x=>x.trim());return rows.filter(r=>r.length>1).map(r=>Object.fromEntries(h.map((k,i)=>[k,(r[i]||'').trim()])))}
-function questionsFromRows(rows){return rows.map(r=>({id:r.question_id||uid('q'),product:r.product||'',set:r.set||'',type:r.type||'MCQ',difficulty:r.difficulty||'',question:r.question||r.Question||'',options:(r.options||'').split('|').map(x=>x.trim()).filter(Boolean),correct:r.correct_answer||'',explanation:r.explanation||'',source:r.source_citation||''})).filter(q=>q.question)}
+function parseCSV(text){
+  text=String(text||'').replace(/^\uFEFF/,'');
+  let firstLine=(text.split(/\r?\n/).find(l=>l.trim())||'');
+  // delimiter detect (comma / semicolon / tab) — quoted অংশ বাদ দিয়ে গুনে
+  let noQ=firstLine.replace(/"[^"]*"/g,'');
+  let delim=',',best=0; [',',';','\t'].forEach(d=>{let n=noQ.split(d).length-1; if(n>best){best=n;delim=d}});
+  let rows=[],row=[],cur='',q=false;
+  for(let i=0;i<text.length;i++){let c=text[i];
+    if(q){if(c=='"'){if(text[i+1]=='"'){cur+='"';i++}else q=false}else cur+=c}
+    else{if(c=='"')q=true;else if(c===delim){row.push(cur);cur=''}else if(c=='\n'){row.push(cur);rows.push(row);row=[];cur=''}else if(c!='\r')cur+=c}}
+  if(cur!==''||row.length){row.push(cur);rows.push(row)}
+  rows=rows.filter(r=>r.some(c=>String(c).trim()!==''));
+  if(!rows.length) return [];
+  let h=rows.shift().map(x=>String(x).replace(/^\uFEFF/,'').trim());
+  return rows.map(r=>Object.fromEntries(h.map((k,i)=>[k,(r[i]||'').trim()])));
+}
+function canonKey_(k){return String(k||'').replace(/^\uFEFF/,'').toLowerCase().replace(/[^a-z0-9]/g,'')}
+function pickField_(row,aliases){let map={}; Object.keys(row||{}).forEach(k=>{map[canonKey_(k)]=row[k]}); for(let a of aliases){let v=map[canonKey_(a)]; if(v!==undefined&&String(v).trim()!=='') return v} return ''}
+function splitOptions_(v){if(Array.isArray(v)) return v.map(x=>typeof x==='object'?(x.text||x.label||x.value||''):x).map(x=>String(x).trim()).filter(Boolean);
+ if(v&&typeof v==='object') return Object.keys(v).sort().map(k=>{let val=String(v[k]).trim(); return /^[A-Ea-e]$/.test(k)&&!/^[A-Ea-e][).]/.test(val)?`${k.toUpperCase()}) ${val}`:val}).filter(Boolean);
+ return String(v||'').split('|').map(x=>x.trim()).filter(Boolean)}
+function withPrefix_(val,letter){let v=String(val||'').trim(); if(!v) return ''; return /^[A-Ea-e][).]/.test(v)?v:`${letter}) ${v}`}
+function resolveCorrect_(options,correct){
+ let raw=String(correct||'').trim(); if(!raw) return {value:'',ok:true};
+ let exact=options.find(o=>o.toLowerCase()===raw.toLowerCase()); if(exact) return {value:exact,ok:true};
+ let strip=s=>String(s).replace(/^[A-Ea-e][).]\s*/,'').trim().toLowerCase();
+ let byText=options.find(o=>strip(o)===strip(raw)); if(byText) return {value:byText,ok:true};
+ let m=raw.match(/^([A-Ea-e]|[1-5])(?:[).:\s]|$)/); if(m){let idx=/[A-Ea-e]/.test(m[1])?m[1].toUpperCase().charCodeAt(0)-65:parseInt(m[1],10)-1; if(options[idx]) return {value:options[idx],ok:true}}
+ let contains=options.find(o=>strip(o)&&raw.toLowerCase().includes(strip(o))); if(contains) return {value:contains,ok:true};
+ return {value:raw,ok:false};
+}
+function normalizeImportedRow(r){
+ let question=pickField_(r,['question','question_text','prompt','প্রশ্ন']);
+ let options=splitOptions_(pickField_(r,['options','choices','option','answers_list']));
+ if(!options.length){let cols=[]; ['a','b','c','d','e'].forEach(L=>{let v=pickField_(r,['option_'+L,'option'+L,'opt_'+L,'choice_'+L]); if(String(v||'').trim()) cols.push(withPrefix_(v,L.toUpperCase()))}); options=cols}
+ let correctRaw=pickField_(r,['correct_answer','correct','answer','correct_option','right_answer','ans']);
+ let rc=resolveCorrect_(options,correctRaw);
+ let type=String(pickField_(r,['type','question_type'])||'MCQ');
+ let setName=pickField_(r,['set','set_name','tier','level','category','group','module']);
+ return {id:pickField_(r,['question_id','id','qid']),product:pickField_(r,['product','product_name','course','topic']),set:setName,type,difficulty:pickField_(r,['difficulty','complexity']),question:String(question||'').trim(),options,correct:rc.value,correctRaw,correctResolved:rc.ok,explanation:pickField_(r,['explanation','rationale','feedback']),source:pickField_(r,['source_citation','source','citation','reference'])};
+}
+function questionsFromRows(rows){return (rows||[]).map(normalizeImportedRow).filter(q=>q.question)}
 async function syncToSheet(rec){let r=await remotePost(Object.assign({action:'submit'},rec)); return !!r.ok}
 
 /* Premium SVG icon set (no emoji) */
@@ -197,39 +248,44 @@ function viewCreate(){document.getElementById('app').innerHTML=header('create')+
 <label>Title *</label><input id="cTitle" placeholder="যেমন: Shanta Endowment — Set 1">
 <label>Product</label><input id="cProduct" placeholder="Shanta Endowment">
 <div id="qBuilder"></div><button class="btn ghost" onclick="addQ()">+ প্রশ্ন যোগ করুন</button> <button class="btn" onclick="saveManual()">${icon('check')} Bank-এ Save করুন</button></div>
-<div class="card" style="margin-top:16px"><h2>${icon('download','ic ic-lg')} CSV / JSON Upload করে Import</h2><p class="label">CSV header: question_id,product,set,type,difficulty,question,options,correct_answer,explanation,source_citation — options আলাদা করুন <b>|</b> দিয়ে। <a href="data/sample_questions.csv" download>Sample CSV ডাউনলোড</a></p>
-<input type="file" id="fileUp" accept=".csv,.json"><br><br><button class="btn" onclick="importFile()">Import করুন</button><div id="importOut"></div></div></div>`; addQ();}
+<div class="card" style="margin-top:16px"><h2>${icon('download','ic ic-lg')} CSV / JSON Upload করে Import</h2>
+<p class="label"><b>Format A:</b> question_id, product, set, type, difficulty, question, options ( <b>|</b> দিয়ে আলাদা ), correct_answer, explanation, source_citation<br>
+<b>Format B:</b> question_id, product, tier, difficulty, type, question, option_a, option_b, option_c, option_d, correct_answer, explanation, source_citation<br>
+Delimiter comma / semicolon / tab — তিনটিই চলবে। correct_answer-এ পুরো উত্তর, শুধু <b>B</b> অথবা <b>2</b> — সবই মিলিয়ে নেওয়া হবে। <a href="data/sample_questions.csv" download>Sample CSV (Format A)</a> • <a href="data/sample_questions_format_b.csv" download>Sample CSV (Format B)</a></p>
+<input type="file" id="fileUp" accept=".csv,.json,.txt,text/csv,application/json"><br><br><button class="btn" id="importBtn" onclick="importFile()">Import করুন</button> <span id="importSync" class="label"></span><div id="importOut"></div></div></div>`; addQ();}
 window.useTemplate=id=>{let t=TEMPLATES.find(x=>x.id==id); let nq={id:uid('quiz'),kind:t.kind,title:t.name.replace(/^[^ ]+ /,'')+' — '+new Date().toLocaleDateString(),product:'General',set:'Template',questions:JSON.parse(JSON.stringify(t.questions)),source:'Template: '+t.name,createdAt:new Date().toISOString()}; db.quizzes.push(nq); persistQuiz(nq); save(); toast('Template থেকে Bank-এ যোগ হয়েছে'); location.hash='#/bank'; sessionStorage.setItem('bankKind',t.kind)};
 let qn=0; window.addQ=()=>{qn++; let d=document.createElement('div'); d.className='qbox'; d.innerHTML=`<label>প্রশ্ন ${qn}</label><input class="qq" placeholder="প্রশ্ন লিখুন"><label>Options (| দিয়ে)</label><input class="qo" placeholder="A) ... | B) ... | C) ..."><label>সঠিক উত্তর (Quiz হলে)</label><input class="qc" placeholder="B) ..."><label>ব্যাখ্যা</label><input class="qe" placeholder="ব্যাখ্যা">`; document.getElementById('qBuilder').appendChild(d)};
 window.saveManual=()=>{let title=document.getElementById('cTitle').value.trim(); if(!title) return toast('Title দিন'); let qs=[...document.querySelectorAll('.qbox')].map(b=>({question:b.querySelector('.qq').value,options:b.querySelector('.qo').value.split('|').map(x=>x.trim()).filter(Boolean),correct:b.querySelector('.qc').value,explanation:b.querySelector('.qe').value,type:'MCQ'})).filter(q=>q.question); if(!qs.length) return toast('অন্তত ১টি প্রশ্ন দিন'); let dd=dedupeQuestions(qs); if(dd.duplicates.length) toast(dd.duplicates.length+'টি duplicate প্রশ্ন বাদ দেওয়া হয়েছে'); qs=dd.unique; let mq={id:uid('quiz'),kind:document.getElementById('cKind').value,title,product:document.getElementById('cProduct').value,questions:qs,source:'Manual',createdAt:new Date().toISOString()}; db.quizzes.push(mq); persistQuiz(mq); save(); toast('Bank-এ সেভ হয়েছে'); location.hash='#/bank'};
-window.importFile=async()=>{let f=document.getElementById('fileUp').files[0]; if(!f) return toast('ফাইল সিলেক্ট করুন'); let text=await f.text(); let rows,qs; try{ if(f.name.endsWith('.json')){let j=JSON.parse(text); rows=Array.isArray(j)?j:j.questions; qs=rows.map(r=>({id:r.id||r.question_id||'',question:r.question,options:r.options||[],correct:r.correct_answer||r.correct||'',explanation:r.explanation||'',product:r.product||'',set:r.set||'',type:r.type||'MCQ',difficulty:r.difficulty||'',source:r.source_citation||r.source||''}))} else {rows=parseCSV(text); qs=questionsFromRows(rows)} }catch(e){return toast('ফাইল পড়া যায়নি: '+e)}
- if(!qs.length) return toast('কোনো প্রশ্ন পাওয়া যায়নি');
- // product+set অনুযায়ী group; একই set-এর ভিতরে duplicate নিষেধ, ভিন্ন set-এ allow
- let groups={}; qs.forEach(q=>{let k=(q.product||'Imported')+'||'+(q.set||'Set 1'); (groups[k]=groups[k]||[]).push(q)});
- let totalAdded=0,totalSkipped=0,report=[];
- for(let [k,v] of Object.entries(groups)){
-   let [prod,setName]=k.split('||');
-   let clean=dedupeQuestions(v); totalSkipped+=clean.duplicates.length;
-   let existing=db.quizzes.find(x=>x.kind=='quiz'&&(x.product||'')==prod&&(x.set||'')==setName);
-   if(existing){
-     let before=existing.questions.length;
-     let merged=dedupeQuestions([...existing.questions,...clean.unique]);
-     existing.questions=merged.unique; existing.source='Import: '+f.name;
-     let added=existing.questions.length-before; totalAdded+=added;
-     totalSkipped+=merged.duplicates.length; // existing set-এ আগে থেকেই থাকা প্রশ্নগুলো আবার যোগ হয়নি
-     report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:existing.title});
-     await persistQuiz(existing);
-   } else {
-     let iq={id:uid('quiz'),kind:'quiz',title:`${prod} — ${setName}`,product:prod,set:setName,questions:clean.unique,source:'Import: '+f.name,createdAt:new Date().toISOString()};
-     db.quizzes.push(iq); totalAdded+=clean.unique.length;
-     report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added:clean.unique.length,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:''});
-     await persistQuiz(iq);
-   }
- }
- sanitizeAllQuizzes(db); save();
- let detail=report.map(r=>`<div class="dup-set"><b>${esc(r.prod)} — ${esc(r.setName)}</b><br><span class="label">ফাইলে ${r.found}টি • unique ${r.uniqueInFile}টি • Bank-এ যোগ/আপডেট ${r.added}টি • duplicate skip ${r.skipped}টি${r.mergedInto?' • বিদ্যমান set-এ merge হয়েছে':''}</span>${r.duplicates.length?`<div class="dup-list">${r.duplicates.slice(0,12).map(d=>`<p>Duplicate skip: <b>${esc(d.id||('#'+(d.index+1)))}</b> — ${esc(String(d.question).slice(0,110))}…</p>`).join('')}${r.duplicates.length>12?`<p class="label">…আরও ${r.duplicates.length-12}টি</p>`:''}</div>`:''}</div>`).join('');
- document.getElementById('importOut').innerHTML=`<div class="dup-report"><p><span class="badge green">Import সম্পন্ন</span> <b>${totalAdded}</b>টি unique প্রশ্ন Bank-এ যোগ হয়েছে • <b>${totalSkipped}</b>টি duplicate (একই set-এর ভিতরে) skip করা হয়েছে।</p><p class="label">নিয়ম: একই Product + একই Set-এ একই প্রশ্ন একবারই থাকবে; ভিন্ন Set-এ একই প্রশ্ন থাকতে পারে।</p>${detail}</div>`;
- toast(`Import সম্পন্ন: ${totalAdded}টি যোগ, ${totalSkipped}টি duplicate skip`)};
+window.importFile=async()=>{
+ let btn=document.getElementById('importBtn'), out=document.getElementById('importOut'), syncEl=document.getElementById('importSync');
+ let f=document.getElementById('fileUp').files[0]; if(!f) return toast('আগে একটি CSV/JSON ফাইল সিলেক্ট করুন');
+ let name=f.name.toLowerCase(); if(!/\.(csv|json|txt)$/.test(name)){out.innerHTML='<div class="dup-report">শুধু <b>.csv</b> অথবা <b>.json</b> ফাইল import হবে। Excel ফাইল হলে আগে <b>Save As → CSV UTF-8</b> করে নিন।</div>'; return}
+ if(btn){btn.disabled=true; btn.textContent='Import হচ্ছে…'}
+ try{
+  let text=await f.text(); let qs=[];
+  if(name.endsWith('.json')){let j=JSON.parse(text); let arr=Array.isArray(j)?j:(j.questions||j.quizzes||j.data||[]); if(!Array.isArray(arr)||!arr.length) throw new Error('JSON-এ questions array পাওয়া যায়নি'); qs=arr.map(normalizeImportedRow).filter(q=>q.question)}
+  else {let rows=parseCSV(text); if(!rows.length) throw new Error('CSV-তে কোনো data row পাওয়া যায়নি (header ঠিক আছে তো?)'); qs=questionsFromRows(rows)}
+  if(!qs.length) throw new Error('কোনো প্রশ্ন পাওয়া যায়নি — question column-এর নাম/বানান চেক করুন');
+  // validation warnings (exam নষ্ট না করে report-এ দেখাই)
+  let warnings=[]; qs.forEach((q,i)=>{let isText=/text|essay|rating|survey/i.test(q.type||''); if(!isText&&q.options.length<2) warnings.push(`Row ${i+1} (${q.id||'no-id'}): options পাওয়া যায়নি`); if(!isText&&q.options.length>=2&&!q.correct) warnings.push(`Row ${i+1} (${q.id||'no-id'}): correct_answer খালি`); else if(!isText&&q.correct&&!q.correctResolved) warnings.push(`Row ${i+1} (${q.id||'no-id'}): correct_answer (${q.correctRaw}) কোনো option-এর সাথে মেলেনি`)});
+  let groups={}; qs.forEach(q=>{let k=(q.product||'Imported')+'||'+(q.set||'Set 1'); (groups[k]=groups[k]||[]).push(q)});
+  let totalAdded=0,totalSkipped=0,report=[],toSync=[];
+  for(let [k,v] of Object.entries(groups)){
+    let [prod,setName]=k.split('||'); let clean=dedupeQuestions(v); totalSkipped+=clean.duplicates.length;
+    let existing=db.quizzes.find(x=>x.kind=='quiz'&&(x.product||'')==prod&&(x.set||'')==setName);
+    if(existing){let before=existing.questions.length; let merged=dedupeQuestions([...existing.questions,...clean.unique]); existing.questions=merged.unique; existing.source='Import: '+f.name; let added=existing.questions.length-before; totalAdded+=added; totalSkipped+=merged.duplicates.length; report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:existing.title}); toSync.push(existing)}
+    else {let iq={id:uid('quiz'),kind:'quiz',title:`${prod} — ${setName}`,product:prod,set:setName,questions:clean.unique,source:'Import: '+f.name,createdAt:new Date().toISOString()}; db.quizzes.push(iq); totalAdded+=clean.unique.length; report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added:clean.unique.length,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:''}); toSync.push(iq)}
+  }
+  sanitizeAllQuizzes(db); save(); // আগে local save — Sheet sync ধীর হলেও import সফল দেখাবে
+  let detail=report.map(r=>`<div class="dup-set"><b>${esc(r.prod)} — ${esc(r.setName)}</b><br><span class="label">ফাইলে ${r.found}টি • unique ${r.uniqueInFile}টি • Bank-এ যোগ/আপডেট ${r.added}টি • duplicate skip ${r.skipped}টি${r.mergedInto?' • বিদ্যমান set-এ merge হয়েছে':''}</span>${r.duplicates.length?`<div class="dup-list">${r.duplicates.slice(0,12).map(d=>`<p>Duplicate skip: <b>${esc(d.id||('#'+(d.index+1)))}</b> — ${esc(String(d.question).slice(0,110))}…</p>`).join('')}${r.duplicates.length>12?`<p class="label">…আরও ${r.duplicates.length-12}টি</p>`:''}</div>`:''}</div>`).join('');
+  out.innerHTML=`<div class="dup-report"><p><span class="badge green">Import সম্পন্ন</span> <b>${totalAdded}</b>টি unique প্রশ্ন Bank-এ যোগ হয়েছে • <b>${totalSkipped}</b>টি duplicate skip করা হয়েছে • <b>${Object.keys(groups).length}</b>টি set।</p><p class="label">নিয়ম: একই Product + একই Set-এ একই প্রশ্ন একবারই; ভিন্ন Set-এ থাকতে পারে। Quiz Bank-এ গিয়ে set গুলো দেখুন।</p>${warnings.length?`<p><b>সতর্কতা (${warnings.length}টি):</b></p><div class="dup-list">${warnings.slice(0,10).map(w=>`<p>${esc(w)}</p>`).join('')}${warnings.length>10?`<p class="label">…আরও ${warnings.length-10}টি</p>`:''}</div>`:''}${detail}</div>`;
+  toast(`Import সম্পন্ন: ${totalAdded}টি যোগ, ${totalSkipped}টি duplicate skip`);
+  // Sheet sync background-এ (UI আটকে রাখি না)
+  if(remoteUrl()&&toSync.length){if(syncEl)syncEl.textContent='Sheet-এ sync হচ্ছে…'; (async()=>{let ok=0; for(let q of toSync){await persistQuiz(q); ok++} let el=document.getElementById('importSync'); if(el) el.textContent=`Sheet sync শেষ (${ok}/${toSync.length} set)`; toast('Sheet-এ sync সম্পন্ন')})()}
+  else if(syncEl) syncEl.textContent='Local mode — Sheet sync হয়নি (config.js-এ URL নেই)';
+ }catch(e){out.innerHTML=`<div class="dup-report"><b>Import ব্যর্থ হয়েছে:</b> ${esc(String(e.message||e))}<br><span class="label">ফাইলের header ও format উপরের Format A/B-এর সাথে মিলিয়ে আবার চেষ্টা করুন।</span></div>`; toast('Import ব্যর্থ: '+(e.message||e))}
+ finally{if(btn){btn.disabled=false; btn.textContent='Import করুন'}}
+};
 
 // ---------- Take / Participant ----------
 let takeState=null;
@@ -315,7 +371,7 @@ Score Sheet: <a target="_blank" href="https://docs.google.com/spreadsheets/d/${d
 <br><br><button class="btn" onclick="saveSheetUrl()">${icon('check')} Save URL</button> <button class="btn olive" onclick="testConnection()">${icon('zap')} Test Connection</button> <button class="btn ghost" onclick="syncAll()">${icon('refresh')} Sync All (Quiz+Results)</button> <span id="testOut"></span>
 <p class="label"><b>সব employee-এর device-এ কাজ করাতে:</b> এই URL-টি repo-র <b>config.js</b>-এর <code>appsScriptUrl</code>-এ বসিয়ে Vercel-এ redeploy করুন (docs/SETUP.md দেখুন)। Settings-এর URL শুধু এই browser-এর জন্য; তবে শেয়ার-লিংকের সাথে URL-টি encoded আকারে যায়, তাই Active করার সময় Sheet-synced থাকলেই employee লিংক থেকে ডেটা পাবে। Script-এ <b>setupSheets</b> Run করুন (doPost নয়), তারপর Deploy → Web app (Anyone)।</p>
 <button class="btn ghost" onclick="if(confirm('সব local ডেটা রিসেট?')){localStorage.removeItem(LS);location.reload()}">${icon('trash')} Reset Local Data</button></div></div>`}
-window.saveSheetUrl=()=>{db.settings.sheetUrl=val('sheetUrl'); save(); toast('URL Saved'); bootstrapRemote(true)};
+window.saveSheetUrl=()=>{db.settings.sheetUrl=val('sheetUrl'); save(); toast('URL Saved'); bootstrapRemote(true,true)};
 window.testConnection=async()=>{db.settings.sheetUrl=val('sheetUrl'); save(); let o=document.getElementById('testOut'); o.innerHTML='⏳...'; try{let j=await remoteGet('health'); o.innerHTML=`<span class="badge green">✅ Connected! Sheets: ${esc((j.sheets||[]).join(', '))} • Supervisors: ${j.supervisors}</span>`}catch(e){o.innerHTML=`<span class="badge">❌ Connect হয়নি: ${esc(String(e))} — URL (../exec), Access: Anyone ও New version deploy চেক করুন</span>`}};
 window.saveListsRemote=async()=>{let r=await remotePost({action:'saveLists',supervisors:db.supervisors,zones:db.zones}); if(r.ok) toast('☁️ Sheet-এ list sync হয়েছে')};
 window.syncListsFromSheet=async()=>{try{let j=await remoteGet('supervisors'); mergeRemote(j); toast('Sheet থেকে '+db.supervisors.length+' জন supervisor এসেছে'); viewSettings()}catch(e){toast('Sync হয়নি: '+e)}};
