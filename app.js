@@ -15,7 +15,7 @@ function remoteUrl(){return (db.settings.sheetUrl||(window.PORTAL_CONFIG&&window
 async function remoteGet(action,params={}){let base=remoteUrl(); if(!base) throw new Error('no-url'); let u=new URL(base); u.searchParams.set('action',action); Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v)); let ctl=new AbortController(); let tm=setTimeout(()=>ctl.abort(),15000); try{let r=await fetch(u.toString(),{signal:ctl.signal}); let j=await r.json(); if(!j.ok) throw new Error(j.error||'remote error'); return j}finally{clearTimeout(tm)}}
 async function remotePost(payload){let base=remoteUrl(); if(!base) return {ok:false,error:'no-url'}; try{let r=await fetch(base,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)}); let j=await r.json().catch(()=>({ok:true})); return j}catch(e){return {ok:false,error:String(e)}}}
 function mergeRemote(j){let changed=false; if(j.supervisors&&j.supervisors.length){db.supervisors=j.supervisors;changed=true} if(j.zones&&j.zones.length){db.zones=j.zones;changed=true}
- if(j.quizzes) j.quizzes.forEach(q=>{let i=db.quizzes.findIndex(x=>x.id==q.id); if(i>=0)db.quizzes[i]=q; else db.quizzes.push(q); changed=true});
+ if(j.quizzes) j.quizzes.forEach(q=>{sanitizeQuizObject(q); let i=db.quizzes.findIndex(x=>x.id==q.id); if(i>=0)db.quizzes[i]=q; else db.quizzes.push(q); changed=true}); sanitizeAllQuizzes(db);
  if(j.activations) j.activations.forEach(a=>{if(!db.activations.find(x=>x.slug==a.slug)){a.id=a.id||uid('act'); db.activations.push(a); changed=true}});
  if(j.results) j.results.forEach(r=>{if(!db.results.find(x=>x.id==r.id)){db.results.push(r); changed=true}});
  if(changed) save(); return changed}
@@ -24,11 +24,57 @@ async function persistQuiz(q){if(!remoteUrl()) return; let r=await remotePost({a
 
 function uid(p='id'){return p+'-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
 function slug(s){return s.toLowerCase().replace(/[^a-z0-9\u0980-\u09FF]+/gi,'-').replace(/^-|-$/g,'').slice(0,40)||uid('q')}
-function load(){try{let d=JSON.parse(localStorage.getItem(LS)); if(d) return d}catch(e){}
+
+/* ---------- Duplicate protection: একই set-এ একই প্রশ্ন একবারই ---------- */
+function bnDigits_(s){return String(s||'').replace(/[০-৯]/g,c=>'০১২৩৪৫৬৭৮৯'.indexOf(c))}
+function normalizeQuestion(s){
+  let x=bnDigits_(s).toLowerCase().trim();
+  // ".... প্রশ্ন 6:" / "Question 12:" জাতীয় serial prefix বাদ — আসল প্রশ্ন অংশটুকু নিই
+  let m=x.match(/(?:প্রশ্ন|question)\s*\d+\s*[:：]/);
+  if(m && m.index<140) x=x.slice(m.index+m[0].length);
+  x=x.replace(/^\s*(?:q\s*)?\d+\s*[.)।:：-]\s*/,'');
+  x=x.replace(/&amp;/g,'&').replace(/&[^;]+;/g,' ');
+  x=x.replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim();
+  return x;
+}
+function dedupeQuestions(questions){
+  let seen={},unique=[],duplicates=[];
+  (questions||[]).forEach((q,i)=>{let key=normalizeQuestion(q.question); if(!key){unique.push(q);return}
+    if(seen[key]) duplicates.push({id:q.id||'',index:i,question:q.question,duplicateOf:seen[key].id||'',duplicateOfQuestion:seen[key].question});
+    else {seen[key]=q; unique.push(q)}});
+  return {unique,duplicates};
+}
+function sanitizeQuizObject(q){
+  if(!q||!Array.isArray(q.questions)) return {quiz:q,removed:0,duplicates:[]};
+  let r=dedupeQuestions(q.questions);
+  if(r.duplicates.length){q.questions=r.unique; q.duplicateRemoved=(q.duplicateRemoved||0)+r.duplicates.length}
+  return {quiz:q,removed:r.duplicates.length,duplicates:r.duplicates};
+}
+function sanitizeAllQuizzes(target,recordAudit){
+  let totalRemoved=0,details=[];
+  (target.quizzes||[]).forEach(q=>{let before=(q.questions||[]).length; let r=sanitizeQuizObject(q);
+    if(r.removed){totalRemoved+=r.removed; details.push({quizId:q.id,title:q.title||'',product:q.product||'',set:q.set||'',before,after:q.questions.length,removed:r.removed,duplicates:r.duplicates.slice(0,30)})}});
+  let report={at:new Date().toISOString(),totalRemoved,affectedSets:details.length,details};
+  if(recordAudit!==false) target.duplicateAudit=report;
+  return report;
+}
+function duplicateAuditHTML(){
+  let a=db.duplicateAudit; if(!a) return '';
+  if(!a.totalRemoved) return `<div class="card dup-audit ok"><b>Duplicate Check:</b> একই set-এ কোনো duplicate প্রশ্ন পাওয়া যায়নি। <span class="label">(ভিন্ন set-এ একই প্রশ্ন থাকতে পারে — সেটি allow করা হয়েছে)</span></div>`;
+  return `<div class="card dup-audit"><b>Duplicate Audit:</b> মোট <b>${a.totalRemoved}</b>টি duplicate প্রশ্ন ${a.affectedSets}টি set থেকে সরানো/চিহ্নিত হয়েছে।<div class="dup-list">${a.details.map(d=>`<p><b>${esc(d.title)}</b> — ${d.before}টির মধ্যে ${d.after}টি unique, ${d.removed}টি duplicate<br><span class="label">Duplicate IDs: ${d.duplicates.map(x=>esc(x.id||('#'+(x.index+1)))).join(', ')||'—'}</span></p>`).join('')}</div><button class="btn olive" onclick="cleanDuplicates(true)">Clean Duplicates &amp; Sheet-এ Sync করুন</button></div>`;
+}
+window.cleanDuplicates=async function(sync){
+  let report=sanitizeAllQuizzes(db); save();
+  if(sync&&remoteUrl()){for(let q of db.quizzes) await persistQuiz(q); toast(report.totalRemoved?`${report.totalRemoved}টি duplicate সরিয়ে Sheet-এ sync হয়েছে`:'Duplicate নেই — সব quiz Sheet-এ sync হয়েছে')}
+  else toast(report.totalRemoved?`${report.totalRemoved}টি duplicate সরানো হয়েছে`:'একই set-এ কোনো duplicate পাওয়া যায়নি');
+  if((location.hash||'').startsWith('#/bank')) viewBank(); return report;
+};
+
+function load(){try{let d=JSON.parse(localStorage.getItem(LS)); if(d){sanitizeAllQuizzes(d); return d}}catch(e){}
  // seed: group SEED_QUESTIONS by product+set
  let quizzes=[]; let groups={};
  (window.SEED_QUESTIONS||[]).forEach(q=>{let k=q.product+'||'+q.set; (groups[k]=groups[k]||[]).push(q)});
- Object.entries(groups).forEach(([k,qs])=>{let [product,set]=k.split('||'); quizzes.push({id:uid('quiz'),kind:'quiz',title:`${product} — ${set}`,product,set,questions:qs,createdAt:new Date().toISOString(),source:'Sample CSV (seed)'})});
+ Object.entries(groups).forEach(([k,qs])=>{let [product,set]=k.split('||'); quizzes.push({id:uid('quiz'),kind:'quiz',title:`${product} — ${set}`,product,set,questions:dedupeQuestions(qs).unique,createdAt:new Date().toISOString(),source:'Sample CSV (seed)'})});
  quizzes.push({id:'demo-survey',kind:'survey',title:'Training Feedback — Demo Survey',product:'General',set:'Survey',questions:TEMPLATES[1].questions,createdAt:new Date().toISOString(),source:'Template'});
  return {quizzes,activations:[],results:[],supervisors:['Md. Ariful Islam','Fatema Begum','Tanvir Ahmed','Nusrat Jahan','Md. Kamrul Hasan'],zones:['Dhaka North','Dhaka South','Chattogram','Khulna','Rajshahi','Sylhet','Barishal','Rangpur'],settings:{sheetUrl:'',spreadsheetId:'1LYfXLj3XURSvg8pr2a_uZzVwGlz-dp_Sj2WtdcWzQM0',spreadsheetName:'SLI_Employee Knowledge Test Score Sheet',learningHubId:'1EYJwZDV99DPUcMWdC3LZP_7f1EyVJ2n-Yk_mb0k4Qnc'}}}
 function save(){localStorage.setItem(LS,JSON.stringify(db))}
@@ -126,8 +172,8 @@ window.copyMsg=id=>{let a=db.activations.find(x=>x.id==id);let link=shareLink(a.
 
 function viewBank(){let kind=sessionStorage.getItem('bankKind')||'quiz';let list=db.quizzes.filter(q=>q.kind==kind);
  document.getElementById('app').innerHTML=header('bank')+`<div class="wrap"><h1>${icon('layers','ic ic-lg')} ${kind=='quiz'?'Quiz':'Survey'} Bank</h1>
-<div class="tabs"><button class="${kind=='quiz'?'active':''}" onclick="sessionStorage.setItem('bankKind','quiz');viewBank()">${icon('book')} Quiz Test</button><button class="${kind=='survey'?'active':''}" onclick="sessionStorage.setItem('bankKind','survey');viewBank()">${icon('clipboard')} Survey</button></div>
-${list.map(q=>`<div class="card bank-card"><b>${esc(q.title)}</b> <span class="badge">${q.questions.length} প্রশ্ন</span> <span class="badge green">${esc(q.product||'')}</span><br><span class="label">${esc(q.set||'')} • Source: ${esc(q.source||'Manual')}</span><br><br>
+${duplicateAuditHTML()}<div class="tabs"><button class="${kind=='quiz'?'active':''}" onclick="sessionStorage.setItem('bankKind','quiz');viewBank()">${icon('book')} Quiz Test</button><button class="${kind=='survey'?'active':''}" onclick="sessionStorage.setItem('bankKind','survey');viewBank()">${icon('clipboard')} Survey</button></div>
+${list.map(q=>`<div class="card bank-card"><b>${esc(q.title)}</b> <span class="badge">${q.questions.length} unique প্রশ্ন</span>${(()=>{let d=(db.duplicateAudit&&db.duplicateAudit.details||[]).find(x=>x.quizId==q.id); return d?`<span class="badge red">${d.removed} duplicate সরানো</span>`:''})()} <span class="badge green">${esc(q.product||'')}</span><br><span class="label">${esc(q.set||'')} • Source: ${esc(q.source||'Manual')}</span><br><br>
 <button class="btn" onclick="openActivate('${q.id}')">${icon('play')} Active করুন</button> <button class="btn ghost" onclick="previewQuiz('${q.id}')">${icon('eye')} Preview</button> <button class="btn ghost" onclick="delQuiz('${q.id}')">${icon('trash')} Delete</button></div>`).join('')||'<div class="card">কিছু নেই — Create/Import থেকে যোগ করুন।</div>'}
 <h2 class="sec-title">${icon('timer','ic ic-lg')} এই Bank-এর Active Windows</h2>${db.activations.filter(a=>{let qq=db.quizzes.find(x=>x.id==a.quizId);return qq&&qq.kind==kind}).map(a=>shareCard(a)).join('')||'<div class="card empty-state"><div class="empty-ic">'+icon('clock','ic ic-xl')+'</div>কোনো Active Window নেই</div>'}</div>`}
 window.delQuiz=id=>{if(confirm('Delete?')){db.quizzes=db.quizzes.filter(q=>q.id!=id);save();remotePost({action:'deleteQuiz',id});viewBank()}};
@@ -155,13 +201,35 @@ function viewCreate(){document.getElementById('app').innerHTML=header('create')+
 <input type="file" id="fileUp" accept=".csv,.json"><br><br><button class="btn" onclick="importFile()">Import করুন</button><div id="importOut"></div></div></div>`; addQ();}
 window.useTemplate=id=>{let t=TEMPLATES.find(x=>x.id==id); let nq={id:uid('quiz'),kind:t.kind,title:t.name.replace(/^[^ ]+ /,'')+' — '+new Date().toLocaleDateString(),product:'General',set:'Template',questions:JSON.parse(JSON.stringify(t.questions)),source:'Template: '+t.name,createdAt:new Date().toISOString()}; db.quizzes.push(nq); persistQuiz(nq); save(); toast('Template থেকে Bank-এ যোগ হয়েছে'); location.hash='#/bank'; sessionStorage.setItem('bankKind',t.kind)};
 let qn=0; window.addQ=()=>{qn++; let d=document.createElement('div'); d.className='qbox'; d.innerHTML=`<label>প্রশ্ন ${qn}</label><input class="qq" placeholder="প্রশ্ন লিখুন"><label>Options (| দিয়ে)</label><input class="qo" placeholder="A) ... | B) ... | C) ..."><label>সঠিক উত্তর (Quiz হলে)</label><input class="qc" placeholder="B) ..."><label>ব্যাখ্যা</label><input class="qe" placeholder="ব্যাখ্যা">`; document.getElementById('qBuilder').appendChild(d)};
-window.saveManual=()=>{let title=document.getElementById('cTitle').value.trim(); if(!title) return toast('Title দিন'); let qs=[...document.querySelectorAll('.qbox')].map(b=>({question:b.querySelector('.qq').value,options:b.querySelector('.qo').value.split('|').map(x=>x.trim()).filter(Boolean),correct:b.querySelector('.qc').value,explanation:b.querySelector('.qe').value,type:'MCQ'})).filter(q=>q.question); if(!qs.length) return toast('অন্তত ১টি প্রশ্ন দিন'); let mq={id:uid('quiz'),kind:document.getElementById('cKind').value,title,product:document.getElementById('cProduct').value,questions:qs,source:'Manual',createdAt:new Date().toISOString()}; db.quizzes.push(mq); persistQuiz(mq); save(); toast('Bank-এ সেভ হয়েছে'); location.hash='#/bank'};
-window.importFile=async()=>{let f=document.getElementById('fileUp').files[0]; if(!f) return toast('ফাইল সিলেক্ট করুন'); let text=await f.text(); let rows,qs; try{ if(f.name.endsWith('.json')){let j=JSON.parse(text); rows=Array.isArray(j)?j:j.questions; qs=rows.map(r=>({question:r.question,options:r.options||[],correct:r.correct_answer||r.correct||'',explanation:r.explanation||'',product:r.product||'',set:r.set||'',type:r.type||'MCQ'}))} else {rows=parseCSV(text); qs=questionsFromRows(rows)} }catch(e){return toast('ফাইল পড়া যায়নি')}
+window.saveManual=()=>{let title=document.getElementById('cTitle').value.trim(); if(!title) return toast('Title দিন'); let qs=[...document.querySelectorAll('.qbox')].map(b=>({question:b.querySelector('.qq').value,options:b.querySelector('.qo').value.split('|').map(x=>x.trim()).filter(Boolean),correct:b.querySelector('.qc').value,explanation:b.querySelector('.qe').value,type:'MCQ'})).filter(q=>q.question); if(!qs.length) return toast('অন্তত ১টি প্রশ্ন দিন'); let dd=dedupeQuestions(qs); if(dd.duplicates.length) toast(dd.duplicates.length+'টি duplicate প্রশ্ন বাদ দেওয়া হয়েছে'); qs=dd.unique; let mq={id:uid('quiz'),kind:document.getElementById('cKind').value,title,product:document.getElementById('cProduct').value,questions:qs,source:'Manual',createdAt:new Date().toISOString()}; db.quizzes.push(mq); persistQuiz(mq); save(); toast('Bank-এ সেভ হয়েছে'); location.hash='#/bank'};
+window.importFile=async()=>{let f=document.getElementById('fileUp').files[0]; if(!f) return toast('ফাইল সিলেক্ট করুন'); let text=await f.text(); let rows,qs; try{ if(f.name.endsWith('.json')){let j=JSON.parse(text); rows=Array.isArray(j)?j:j.questions; qs=rows.map(r=>({id:r.id||r.question_id||'',question:r.question,options:r.options||[],correct:r.correct_answer||r.correct||'',explanation:r.explanation||'',product:r.product||'',set:r.set||'',type:r.type||'MCQ',difficulty:r.difficulty||'',source:r.source_citation||r.source||''}))} else {rows=parseCSV(text); qs=questionsFromRows(rows)} }catch(e){return toast('ফাইল পড়া যায়নি: '+e)}
  if(!qs.length) return toast('কোনো প্রশ্ন পাওয়া যায়নি');
- // group by product+set if available
+ // product+set অনুযায়ী group; একই set-এর ভিতরে duplicate নিষেধ, ভিন্ন set-এ allow
  let groups={}; qs.forEach(q=>{let k=(q.product||'Imported')+'||'+(q.set||'Set 1'); (groups[k]=groups[k]||[]).push(q)});
- Object.entries(groups).forEach(([k,v])=>{let [p,s]=k.split('||'); let iq={id:uid('quiz'),kind:'quiz',title:`${p} — ${s}`,product:p,set:s,questions:v,source:'Import: '+f.name,createdAt:new Date().toISOString()}; db.quizzes.push(iq); persistQuiz(iq)});
- save(); document.getElementById('importOut').innerHTML=`<p class="badge green">✅ ${qs.length}টি প্রশ্ন, ${Object.keys(groups).length}টি Quiz হিসেবে Bank-এ যোগ হয়েছে!</p>`; toast('Import সম্পন্ন')};
+ let totalAdded=0,totalSkipped=0,report=[];
+ for(let [k,v] of Object.entries(groups)){
+   let [prod,setName]=k.split('||');
+   let clean=dedupeQuestions(v); totalSkipped+=clean.duplicates.length;
+   let existing=db.quizzes.find(x=>x.kind=='quiz'&&(x.product||'')==prod&&(x.set||'')==setName);
+   if(existing){
+     let before=existing.questions.length;
+     let merged=dedupeQuestions([...existing.questions,...clean.unique]);
+     existing.questions=merged.unique; existing.source='Import: '+f.name;
+     let added=existing.questions.length-before; totalAdded+=added;
+     totalSkipped+=merged.duplicates.length; // existing set-এ আগে থেকেই থাকা প্রশ্নগুলো আবার যোগ হয়নি
+     report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:existing.title});
+     await persistQuiz(existing);
+   } else {
+     let iq={id:uid('quiz'),kind:'quiz',title:`${prod} — ${setName}`,product:prod,set:setName,questions:clean.unique,source:'Import: '+f.name,createdAt:new Date().toISOString()};
+     db.quizzes.push(iq); totalAdded+=clean.unique.length;
+     report.push({prod,setName,found:v.length,uniqueInFile:clean.unique.length,added:clean.unique.length,skipped:clean.duplicates.length,duplicates:clean.duplicates,mergedInto:''});
+     await persistQuiz(iq);
+   }
+ }
+ sanitizeAllQuizzes(db); save();
+ let detail=report.map(r=>`<div class="dup-set"><b>${esc(r.prod)} — ${esc(r.setName)}</b><br><span class="label">ফাইলে ${r.found}টি • unique ${r.uniqueInFile}টি • Bank-এ যোগ/আপডেট ${r.added}টি • duplicate skip ${r.skipped}টি${r.mergedInto?' • বিদ্যমান set-এ merge হয়েছে':''}</span>${r.duplicates.length?`<div class="dup-list">${r.duplicates.slice(0,12).map(d=>`<p>Duplicate skip: <b>${esc(d.id||('#'+(d.index+1)))}</b> — ${esc(String(d.question).slice(0,110))}…</p>`).join('')}${r.duplicates.length>12?`<p class="label">…আরও ${r.duplicates.length-12}টি</p>`:''}</div>`:''}</div>`).join('');
+ document.getElementById('importOut').innerHTML=`<div class="dup-report"><p><span class="badge green">Import সম্পন্ন</span> <b>${totalAdded}</b>টি unique প্রশ্ন Bank-এ যোগ হয়েছে • <b>${totalSkipped}</b>টি duplicate (একই set-এর ভিতরে) skip করা হয়েছে।</p><p class="label">নিয়ম: একই Product + একই Set-এ একই প্রশ্ন একবারই থাকবে; ভিন্ন Set-এ একই প্রশ্ন থাকতে পারে।</p>${detail}</div>`;
+ toast(`Import সম্পন্ন: ${totalAdded}টি যোগ, ${totalSkipped}টি duplicate skip`)};
 
 // ---------- Take / Participant ----------
 let takeState=null;
@@ -172,7 +240,7 @@ async function renderTake(s){let app=document.getElementById('app');
  let a=db.activations.find(x=>x.slug==s);
  if(a&&isClosed(a)){clearTakeTimers(); app.innerHTML=`<div class="wrap quiz-shell"><div class="card result-card"><div class="inline-logo"><img src="assets/logo-dark.png" alt="Shanta Life"></div><div class="closed-hero">${icon('shield','ic ic-xl')}</div><h1>এই ${'window'} টি বন্ধ করা হয়েছে</h1><p>Trainer/Admin এই Quiz/Survey-এর window বন্ধ করেছেন। অংশ নেওয়ার জন্য ধন্যবাদ। নতুন লিংক পেলে আবার চেষ্টা করুন।</p><p class="label">${esc(a.quizTitle||'')} • ${esc(a.purpose||'')}</p></div></div>`; return}
  if(!a){app.innerHTML=`<div class="wrap"><div class="card"><h1>❌ লিংকটি পাওয়া যায়নি</h1><p>সম্ভাব্য কারণ: Quiz-টি Sheet-এ sync হয়নি, অথবা লিংকটি ভুল। Admin-কে config.js-এ Apps Script URL বসিয়ে redeploy করতে বলুন, তারপর নতুন করে Active করে নতুন লিংক শেয়ার করুন।</p></div></div>`;return}
- let q=db.quizzes.find(x=>x.id==a.quizId); if(!q){app.innerHTML=`<div class="wrap"><div class="card"><h1>❌ Quiz পাওয়া যায়নি</h1></div></div>`;return}
+ let q=db.quizzes.find(x=>x.id==a.quizId); if(!q){app.innerHTML=`<div class="wrap"><div class="card"><h1>❌ Quiz পাওয়া যায়নি</h1></div></div>`;return} q=JSON.parse(JSON.stringify(q)); sanitizeQuizObject(q);
  let isToday=a.date==today();
  if(!isToday){app.innerHTML=`<div class="wrap"><div class="card" style="text-align:center"><div class="inline-logo"><img src="assets/logo-dark.png" alt="Shanta Life"></div><h1>এই ${q.kind=='quiz'?'কুইজ':'সার্ভে'}টি শুধুমাত্র ${a.date} তারিখে Active থাকবে</h1><p>${esc(a.message)}</p><p class="label">আজকের তারিখ: ${today()} • নির্ধারিত তারিখ: ${a.date}</p></div></div>`;return}
  takeState={a,q,answers:{},idx:0,emp:null,started:null};

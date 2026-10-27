@@ -213,3 +213,13 @@ tbody tr:hover td,tr:hover td{background:#FFF9EF}
 @keyframes optionIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .result-card,.form-card{animation:questionIn .45s ease both}
 .btn,.card,.option{will-change:transform}
+
+
+/* ---------- Duplicate audit ---------- */
+.dup-audit{border-left:6px solid var(--orange)}
+.dup-audit.ok{border-left-color:var(--ok)}
+.dup-list{margin-top:8px;max-height:220px;overflow:auto;background:#FFF9EF;border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.dup-list p{margin:7px 0;line-height:1.55}
+.dup-report{margin-top:14px;background:#FFF9EF;border:1px solid var(--line);border-radius:15px;padding:14px 16px}
+.dup-set{border-top:1px dashed var(--line2);padding:10px 0}
+.dup-set:first-of-type{border-top:0}
