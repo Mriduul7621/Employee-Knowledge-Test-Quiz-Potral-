@@ -84,8 +84,27 @@ function upsert_(name, keyIdx, key, row) {
   }
   s.appendRow(row); return 'inserted';
 }
+
+function normalizeQuestion_(s) {
+  var bn = {'০':'0','১':'1','২':'2','৩':'3','৪':'4','৫':'5','৬':'6','৭':'7','৮':'8','৯':'9'};
+  var x = String(s || '').replace(/[০-৯]/g, function(c){ return bn[c]; }).toLowerCase().trim();
+  var m = x.match(/(?:প্রশ্ন|question)\s*\d+\s*[:：]/);
+  if (m && m.index < 140) x = x.slice(m.index + m[0].length);
+  x = x.replace(/^\s*(?:q\s*)?\d+\s*[.)।:：-]\s*/, '');
+  x = x.replace(/&amp;/g, '&').replace(/&[^;]+;/g, ' ');
+  x = x.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return x;
+}
+function dedupeQuestions_(questions) {
+  var seen = {}, out = [];
+  (questions || []).forEach(function(q) {
+    var key = normalizeQuestion_(q && q.question);
+    if (!key || !seen[key]) { if (key) seen[key] = 1; out.push(q); }
+  });
+  return out;
+}
 function parseQuiz_(r) {
-  var qs = []; try { qs = JSON.parse(r[6] || '[]'); } catch (e) {}
+  var qs = []; try { qs = dedupeQuestions_(JSON.parse(r[6] || '[]')); } catch (e) {}
   return { id: r[0], kind: r[1], title: r[2], product: r[3], set: r[4], source: r[5], questions: qs, createdAt: r[7] };
 }
 function parseAct_(r) { return { slug: r[0], quizId: r[1], quizTitle: r[2], purpose: r[3], date: String(r[4]), message: r[5], createdAt: r[6], durationMinutes: Number(r[7] || 0), status: String(r[8] || 'active'), closedAt: r[9] || '', closedBy: r[10] || '' }; }
@@ -131,7 +150,7 @@ function doPost(e) {
     var d = JSON.parse(e.postData.contents), action = d.action || 'submit', now = new Date().toISOString();
     if (action === 'saveQuiz' && d.quiz) {
       var q = d.quiz;
-      upsert_('Quizzes', 0, q.id, [q.id, q.kind || 'quiz', q.title || '', q.product || '', q.set || '', q.source || '', JSON.stringify(q.questions || []), q.createdAt || now, now]);
+      upsert_('Quizzes', 0, q.id, [q.id, q.kind || 'quiz', q.title || '', q.product || '', q.set || '', q.source || '', JSON.stringify(dedupeQuestions_(q.questions || [])), q.createdAt || now, now]);
       return json_({ ok: true, saved: q.id });
     }
     if (action === 'deleteQuiz') {
@@ -141,7 +160,7 @@ function doPost(e) {
     }
     if (action === 'activate' && d.activation) {
       var a = d.activation;
-      if (d.quiz) { var q2 = d.quiz; upsert_('Quizzes', 0, q2.id, [q2.id, q2.kind || 'quiz', q2.title || '', q2.product || '', q2.set || '', q2.source || '', JSON.stringify(q2.questions || []), q2.createdAt || now, now]); }
+      if (d.quiz) { var q2 = d.quiz; upsert_('Quizzes', 0, q2.id, [q2.id, q2.kind || 'quiz', q2.title || '', q2.product || '', q2.set || '', q2.source || '', JSON.stringify(dedupeQuestions_(q2.questions || [])), q2.createdAt || now, now]); }
       upsert_('Activations', 0, a.slug, [a.slug, a.quizId, a.quizTitle || '', a.purpose || '', a.date || '', a.message || '', a.createdAt || now, Number(a.durationMinutes || 0), a.status || 'active', a.closedAt || '', a.closedBy || '']);
       return json_({ ok: true, slug: a.slug });
     }
