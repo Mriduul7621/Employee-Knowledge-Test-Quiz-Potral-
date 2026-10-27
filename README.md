@@ -25,3 +25,10 @@ Brand: Olive Green `#978C21` • Sunset Orange `#F37021` • Charcoal Grey `#3C3
 python3 -m http.server 8000 --bind 0.0.0.0
 # http://localhost:8000
 ```
+
+## ☁️ v2 — Sheet-backed Database (Errorless)
+- Backend: `google-apps-script.gs` v2 — sheets: `Quizzes | Activations | Supervisors | Zones | Responses` (auto-create)
+- Editor-এ `doPost` নয়, **`setupSheets`** Run করুন (doPost এখন Run করলেও error দেবে না)।
+- Participant link এখন Sheet থেকে quiz + supervisor list আনে — **যেকোনো device-এ কাজ করে**; শেয়ার-লিংকের সাথে API URL-ও encoded থাকে।
+- স্থায়ী setup: deploy URL `config.js`-এর `appsScriptUrl`-এ বসিয়ে Vercel redeploy — ধাপে ধাপে নির্দেশনা: **docs/SETUP.md**
+- Settings-এ **🔌 Test Connection**, **☁️ Sheet থেকে Sync**, **🔄 Sync All** ও pending-sync indicator আছে; submit fail হলে pending queue-তে থেকে পরে sync হয়।
